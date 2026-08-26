@@ -5,9 +5,10 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: '3.11'}
       - run: pip install -r requirements.txt pip-audit bandit
       - run: pip-audit -r requirements.txt
       - run: bandit -q -r app -x tests
+
