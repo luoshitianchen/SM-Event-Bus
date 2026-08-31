@@ -1,88 +1,103 @@
+"""SM Event Bus 领域测试：主题/发布/订阅/消费/ACK/NACK/重放/死信。"""
+
+import pytest
 from fastapi.testclient import TestClient
-from app.main import app
+
+from app import base
+from app.main import VERSION, app
 
 
-def test_health_and_security_headers():
-    with TestClient(app) as client:
-        response = client.get('/health', headers={'X-Request-Id': 'suite-test'})
-        assert response.status_code == 200
-        assert response.headers['X-Request-Id'] == 'suite-test'
-        assert response.headers['X-Frame-Options'] == 'DENY'
-        assert response.json()['version'] == '1.0.0'
+@pytest.fixture()
+def client(monkeypatch):
+    monkeypatch.setattr(base, "internal_api_key", lambda: "TEST")
+    base.reset_state()
+    from app.main import _init as init_db
+    init_db()
+    with TestClient(app) as c:
+        c.headers["X-Internal-Token"] = "TEST"
+        yield c
 
 
-def test_overview_and_item_lifecycle(monkeypatch):
-    from app import main
-    monkeypatch.setattr(main, 'INTERNAL_API_KEY', 'TEST')
-    with TestClient(app) as client:
-        overview = client.get('/api/overview').json()
-        assert overview['total'] >= 2
-        created = client.post('/api/items', headers={'X-Internal-Token': 'TEST'}, json={'name': '企业级测试资源', 'owner': '测试部', 'priority': 'P2'}).json()
-        assert created['status'] == 'active'
-        updated = client.patch(f"/api/items/{created['id']}/status?item_status=review", headers={'X-Internal-Token': 'TEST'})
-        assert updated.status_code == 200
-        assert updated.json()['status'] == 'review'
+def _topic(client, name="orders"):
+    return client.post("/api/events/topics", headers={"X-Internal-Token": "TEST"}, json={"name": name, "description": "订单事件"}).json()["id"]
 
 
-def test_ops_metrics():
-    with TestClient(app) as client:
-        client.get('/health')
-        metrics = client.get('/api/ops/metrics')
-        assert metrics.status_code == 200
-        assert metrics.json()['requests_total'] >= 1
+def test_health_and_security_headers(client):
+    r = client.get("/health", headers={"X-Request-Id": "suite-test"})
+    assert r.status_code == 200
+    assert r.headers["X-Request-Id"] == "suite-test"
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.json()["version"] == VERSION
 
 
-
-def test_integration_manifest_contract():
-    with TestClient(app) as client:
-        response = client.get('/api/integration/manifest')
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload['service']
-        assert payload['version'] == '1.0.0'
-        assert '/api/ops/metrics' == payload['metrics_path']
-        assert isinstance(payload['dependencies'], list)
+def test_topic_lifecycle(client):
+    _topic(client)
+    dup = client.post("/api/events/topics", headers={"X-Internal-Token": "TEST"}, json={"name": "orders"})
+    assert dup.status_code == 409
+    assert client.get("/api/events/topics").json()["total"] == 1
 
 
-
-def test_request_size_and_rate_limit_guards(monkeypatch):
-    from app import main
-    main.RATE_BUCKETS.clear()
-    monkeypatch.setattr(main, 'MAX_REQUEST_BYTES', 4)
-    monkeypatch.setattr(main, 'RATE_MAX_REQUESTS', 1)
-    with TestClient(app) as client:
-        oversized = client.post('/api/items', content='12345', headers={'content-type': 'application/json'})
-        assert oversized.status_code == 413
-        assert client.get('/health').status_code == 200
-        limited = client.get('/health')
-        assert limited.status_code == 429
-        assert limited.headers['Retry-After']
+def test_publish_and_idempotency(client):
+    _topic(client)
+    created = client.post("/api/events/publish", headers={"X-Internal-Token": "TEST"}, json={"topic": "orders", "event_type": "order.created", "payload": {"order_id": "A1"}, "idempotency_key": "k-1"})
+    assert created.status_code == 201
+    duplicate = client.post("/api/events/publish", headers={"X-Internal-Token": "TEST"}, json={"topic": "orders", "event_type": "order.created", "payload": {"order_id": "A1"}, "idempotency_key": "k-1"})
+    assert duplicate.json()["duplicate"] is True
+    assert client.get("/api/events/stats").json()["events"] == 1
 
 
-def test_internal_write_token_is_enforced(monkeypatch):
-    from app import main
-    monkeypatch.setattr(main, 'INTERNAL_API_KEY', 'TOKEN')
-    with TestClient(app) as client:
-        blocked = client.post('/api/items', json={'name': 'blocked'})
-        assert blocked.status_code == 403
-        allowed = client.post('/api/items', headers={'X-Internal-Token': 'TOKEN'}, json={'name': 'allowed'})
-        assert allowed.status_code == 201
+def test_consume_ack_and_nack_to_dead_letter(client):
+    _topic(client)
+    client.post("/api/events/publish", headers={"X-Internal-Token": "TEST"}, json={"topic": "orders", "event_type": "order.created", "payload": {"id": 1}})
+    sub = client.post("/api/events/subscriptions", headers={"X-Internal-Token": "TEST"}, json={"name": "billing", "topic": "orders"}).json()["id"]
+    batch = client.post("/api/events/consume", headers={"X-Internal-Token": "TEST"}, json={"subscription_id": sub}).json()
+    assert batch["count"] == 1
+    delivery_id = batch["items"][0]["delivery_id"]
+    assert client.post("/api/events/ack", headers={"X-Internal-Token": "TEST"}, json={"delivery_id": delivery_id}).json()["status"] == "delivered"
+    # 已投递不再重复消费
+    assert client.post("/api/events/consume", headers={"X-Internal-Token": "TEST"}, json={"subscription_id": sub}).json()["count"] == 0
 
 
+def test_nack_dead_letter_and_retry(client):
+    _topic(client)
+    client.post("/api/events/publish", headers={"X-Internal-Token": "TEST"}, json={"topic": "orders", "event_type": "order.created", "payload": {"id": 2}})
+    sub = client.post("/api/events/subscriptions", headers={"X-Internal-Token": "TEST"}, json={"name": "worker", "topic": "orders"}).json()["id"]
+    batch = client.post("/api/events/consume", headers={"X-Internal-Token": "TEST"}, json={"subscription_id": sub}).json()
+    delivery_id = batch["items"][0]["delivery_id"]
+    result = client.post("/api/events/nack", headers={"X-Internal-Token": "TEST"}, json={"delivery_id": delivery_id, "max_attempts": 1})
+    assert result.json()["status"] == "dead_lettered"
+    assert client.get("/api/events/dead-letters").json()["total"] == 1
+    dead_id = client.get("/api/events/dead-letters").json()["items"][0]["id"]
+    retry = client.post(f"/api/events/dead-letters/{dead_id}/retry", headers={"X-Internal-Token": "TEST"})
+    assert retry.status_code == 200
+    assert client.get("/api/events/dead-letters").json()["total"] == 0
 
-def test_sm3_crypto_endpoint():
-    with TestClient(app) as client:
-        response = client.post('/api/crypto/sm3', json={'value': 'enterprise'})
-        assert response.status_code == 200
-        assert response.json()['algorithm'] == 'SM3'
-        assert len(response.json()['digest']) == 64
-        assert client.get('/api/crypto/status').json()['sm4'] == 'enabled'
+
+def test_replay(client):
+    _topic(client)
+    client.post("/api/events/publish", headers={"X-Internal-Token": "TEST"}, json={"topic": "orders", "event_type": "order.created", "payload": {"id": 3}})
+    sub = client.post("/api/events/subscriptions", headers={"X-Internal-Token": "TEST"}, json={"name": "auditor", "topic": "orders"}).json()["id"]
+    client.post("/api/events/consume", headers={"X-Internal-Token": "TEST"}, json={"subscription_id": sub})
+    replay = client.post("/api/events/replay/orders", headers={"X-Internal-Token": "TEST"})
+    assert replay.json()["replayed"] == 1
+    assert client.post("/api/events/consume", headers={"X-Internal-Token": "TEST"}, json={"subscription_id": sub}).json()["count"] == 1
 
 
+def test_write_requires_auth(client):
+    del client.headers["X-Internal-Token"]
+    assert client.post("/api/events/topics", json={"name": "x"}).status_code == 401
 
-def test_security_baseline():
-    with TestClient(app) as client:
-        payload = client.get('/api/security/baseline').json()
-        assert payload['controls']['sm3'] is True
-        assert payload['controls']['sm4'] is True
-        assert payload['controls']['rate_limit'] is True
+
+def test_manifest_and_baseline(client):
+    manifest = client.get("/api/integration/manifest").json()
+    assert manifest["version"] == VERSION
+    assert "sm-audit-log-center" in manifest["dependencies"]
+    controls = client.get("/api/security/baseline").json()["controls"]
+    assert controls["sm4_integrity_mac"] is True
+
+
+def test_crypto_tamper_detection(client):
+    enc = client.post("/api/crypto/encrypt", json={"value": "secret"}).json()["ciphertext"]
+    assert client.post("/api/crypto/decrypt", json={"value": enc}).json()["plaintext"] == "secret"
+    tampered = enc[:-2] + ("00" if not enc.endswith("00") else "11")
+    assert client.post("/api/crypto/decrypt", json={"value": tampered}).status_code == 400
