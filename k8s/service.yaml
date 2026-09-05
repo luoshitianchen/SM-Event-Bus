@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sm-event-bus
+  namespace: sm
+  labels:
+    app: sm-event-bus
+    platform: sm-suite
+spec:
+  type: ClusterIP
+  selector:
+    app: sm-event-bus
+  ports:
+  - name: http
+    port: 8410
+    targetPort: http
+    protocol: TCP
