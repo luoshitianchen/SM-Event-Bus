@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app import base
 
 SERVICE = "sm-event-bus"
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 NAME = "SM Event Bus"
 DESCRIPTION = "企业事件总线：主题管理、事件发布、订阅投递、重放与死信队列"
 PORT = 8410
