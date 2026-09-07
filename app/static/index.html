@@ -1,1 +1,30 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SM Event Bus</title><style>body{font:16px system-ui;margin:0;background:#07111f;color:#e8f0ff}main{max-width:1000px;margin:auto;padding:40px}.card{background:#0d1f34;border:1px solid #245078;border-radius:12px;padding:20px;margin:12px 0}h1{font-size:36px}.muted{color:#9db2c9}.badge{color:#8ff0c8}</style><main><div class="card"><div class="badge">SM ENTERPRISE SUITE</div><h1>SM Event Bus</h1><p class="muted">企业消息与事件总线：事件发布、订阅、重试和审计</p><p>健康探针：/health · 就绪：/readyz · 指标：/api/ops/metrics · 国密：/api/crypto/status</p></div><div id="out" class="card">加载中...</div></main><script>fetch('/api/overview').then(r=>r.json()).then(x=>document.querySelector('#out').innerHTML='<b>资源总数：'+x.total+'</b><br>'+x.platform.description).catch(()=>document.querySelector('#out').textContent='服务异常')</script></html>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SM Event Bus</title><style>
+:root{font-family:Inter,"Microsoft YaHei",sans-serif;background:#07111f;color:#e8f0ff}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#07111f,#102a43)}.shell{max-width:1180px;margin:auto;padding:30px 22px}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #214668;padding-bottom:16px}.brand{letter-spacing:.18em;color:#79b8ff;font-size:13px}.pill{border:1px solid #2f5f89;border-radius:99px;padding:8px 13px;color:#8ff0c8}.pill.down{color:#ff8f8f;border-color:#893a3a}.hero{padding:34px 0}.hero h1{font-size:38px;margin:0 0 10px}.lead{color:#a9bdd6;line-height:1.7;max-width:760px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}.metric,.card{background:#0d1f34;border:1px solid #1f4363;border-radius:14px;padding:18px;box-shadow:0 18px 40px #0004}.metric small{color:#8aa4c0}.metric strong{display:block;font-size:28px;margin-top:8px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.card h3{margin:0 0 8px;text-transform:capitalize}.muted{color:#91a8c1}.badge{display:inline-block;margin-top:8px;background:#123d68;color:#9fd0ff;padding:5px 9px;border-radius:99px;font-size:12px}.foot{margin-top:24px;color:#6f89a6;font-size:13px}@media(max-width:760px){.metrics{grid-template-columns:1fr}.top{display:block}.pill{display:inline-block;margin-top:10px}}</style></head><body><main class="shell"><header class="top"><div class="brand">SM ENTERPRISE SUITE</div><div id="health" class="pill">检测中</div></header><section class="hero"><h1 id="svcname">SM Event Bus</h1><p class="lead" id="desc">企业消息与事件总线：主题发布订阅、可靠投递、重试与死信队列</p></section><section class="metrics"><div class="metric"><small>服务版本</small><strong id="version">-</strong></div><div class="metric"><small>健康状态</small><strong id="healthstat">-</strong></div><div class="metric"><small>资源指标</small><strong id="metriccount">-</strong></div></section><section class="grid" id="items"></section><div class="foot">接口：/health · /readyz · /api/overview · /api/ops/metrics · /api/security/baseline</div></main><script>
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function load(){
+  try{
+    const h=await fetch('/health').then(r=>r.json()),
+          o=await fetch('/api/overview').then(r=>r.json());
+    const healthy=o.healthy!==false;
+    const hp=document.querySelector('#health');
+    hp.textContent=healthy?'服务正常':'服务异常';
+    hp.classList.toggle('down',!healthy);
+    document.querySelector('#healthstat').textContent=healthy?'正常':'异常';
+    document.querySelector('#healthstat').style.color=healthy?'#8ff0c8':'#ff8f8f';
+    const ver=(o.platform&&o.platform.version)||h.version||'-';
+    document.querySelector('#version').textContent=ver;
+    if(o.platform&&o.platform.name){document.querySelector('#svcname').textContent=o.platform.name;document.title=o.platform.name;}
+    if(o.platform&&o.platform.description)document.querySelector('#desc').textContent=o.platform.description;
+    const summary=o.summary||{};
+    const keys=Object.keys(summary);
+    document.querySelector('#metriccount').textContent=keys.length?keys.length+' 项':'无';
+    document.querySelector('#items').innerHTML=keys.map(k=>'<article class="card"><h3>'+esc(k)+'</h3><div class="muted">当前值</div><span class="badge">'+esc(summary[k])+'</span></article>').join('')||'<div class="card muted">该服务暂未暴露资源统计指标</div>';
+  }catch(e){
+    const hp=document.querySelector('#health');
+    hp.textContent='服务异常';hp.classList.add('down');
+    document.querySelector('#healthstat').textContent='异常';
+    document.querySelector('#healthstat').style.color='#ff8f8f';
+  }
+}
+load();setInterval(load,15000);
+</script></body></html>
