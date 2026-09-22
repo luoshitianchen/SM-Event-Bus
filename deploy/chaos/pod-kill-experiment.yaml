@@ -1,0 +1,16 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: sm-event-bus-pod-kill
+  namespace: sm-prod
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - sm-prod
+    labelSelectors:
+      app.kubernetes.io/instance: sm-event-bus
+      app.kubernetes.io/name: sm-event-bus
+  scheduler:
+    cron: '@every 30m'
